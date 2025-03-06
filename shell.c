@@ -1,5 +1,4 @@
 /* SHELL.c - UNIX-like Shell for SBC1806 */
-/*Compile with: .\lcc -target=xr18CX "-Wa -D STACKLOC=0xFFFF" "-Wa -D NOFILLBSS=1 " "-Wa -D DATALOC=0x8000" "-Wa -D CPUSPEED=5000000" shell.c -s -o ef.hex "-Wf -volatile -cpu1805" "-DSCC=2" "-DDEBUG=0" -w*/
 #include <olduino.h>
 #include <nstdlib.h>
 #include <scc.h>
@@ -461,18 +460,18 @@ void shell_run(int argc, char **argv) {
 }
 
 /* Memory Initialization (call once at startup) */
-void init_memory_system(void) {
+/*void init_memory_system(void) {
     unsigned *user_ptr = get_user_ptr();
     FileEntry *files = get_file_table();
     int i = 0;
     int root_initialized = 0;
     
-    /* Only initialize user pointer if invalid */
+    // Only initialize user pointer if invalid 
     if(*user_ptr < USER_START || *user_ptr > USER_END) {
         *user_ptr = USER_START + sizeof(unsigned);
     }
 
-    /* Initialize root directory only if needed */
+    ///* Initialize root directory only if needed 
     root_initialized = 0;
     for(i = 0; i < MAX_FILES; i++) {
         if(files[i].type == TYPE_DIR && files[i].parent == -1) {
@@ -482,7 +481,7 @@ void init_memory_system(void) {
     }
     
     if(!root_initialized) {
-        /* Create root directory in first available slot */
+        // Create root directory in first available slot 
         for(i = 0; i < MAX_FILES; i++) {
             if(files[i].name[0] == '\0') {
                 files[i].type = TYPE_DIR;
@@ -494,10 +493,46 @@ void init_memory_system(void) {
         }
     }
 
-    /* Initialize current directory state */
+    // Initialize current directory state 
     current_dir = -1;
     strcpy(current_path, "/");
     current_path[MAX_PATH_LEN-1] = '\0';
+}
+*/
+
+void init_memory_system(void) {
+    int i=0;
+    /* Initialize user memory pointer */
+    unsigned *user_ptr = get_user_ptr();
+    FileEntry *files = get_file_table();
+    *user_ptr = USER_START + sizeof(unsigned);  // Skip pointer storage
+    
+    /* Clear file table */
+    /* Add these global state variables */
+    current_dir = -1;  // -1 = root
+    
+    
+    for(i=0;i<sizeof(current_path);i++){
+        current_path[i]=NULL;
+    }
+    current_path[0] = '/';
+    for(i=0; i<MAX_FILES; i++) {
+        files[i].name[0] = '\0';
+        files[i].start = NULL;
+        files[i].size = 0;
+    }
+
+    /* Revised directory tracking */
+    current_path[MAX_PATH_LEN] = '/';
+    // Create root directory
+    files[0].name[0] = '\0';  // Root has empty name
+    files[0].type = TYPE_DIR;
+    files[0].parent = -1;
+    files[0].start = NULL;
+    files[0].size = 0;
+
+        
+        
 }
 
 void shell_mkdir(int argc, char **argv) {
@@ -794,28 +829,31 @@ void print_prompt(void) {
 
 void shell_hardwipe(int argc, char **argv){
     // Clear all entries thoroughly
-    int i = 0;
+    /*int i = 0;
     FileEntry *files = get_file_table();
     unsigned *user_ptr = get_user_ptr();
 
-    /* Clear all file entries */
+    ///* Clear all file entries 
     for(i = 0; i < MAX_FILES; i++) {
         memset(&files[i], 0, sizeof(FileEntry));
     }
 
-    /* Reset memory pointer */
+    ///* Reset memory pointer 
     *user_ptr = USER_START + sizeof(unsigned);
 
-    /* Recreate root directory */
+    ///* Recreate root directory 
     files[0].type = TYPE_DIR;
     files[0].parent = -1;
     strcpy(files[0].name, "");
 
-    /* Reset directory state */
+    ///* Reset directory state 
+    */
+    init_memory_system();
     current_dir = -1;
     strcpy(current_path, "/");
-
+    
     printf("System fully reset\r\n");
+    
 }
 
 void execute_command(char *cmdline) {
@@ -850,7 +888,7 @@ int main() {
     char cmd_buffer[MAX_CMD];
     
     sccInit();
-    init_memory_system();
+    //init_memory_system();
     printf("\033[2J\033[H");
     printf("SBC1806 Shell v" VERSION "\r\n");
     
