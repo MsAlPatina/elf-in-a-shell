@@ -1,4 +1,5 @@
 /* SHELL.c - UNIX-like Shell for SBC1806 */
+/*Compile with: .\lcc -target=xr18CX "-Wa -D STACKLOC=0xFFFF" "-Wa -D NOFILLBSS=1 " "-Wa -D DATALOC=0x8000" "-Wa -D CPUSPEED=5000000" shell.c -s -o ef.hex "-Wf -volatile -cpu1805" "-DSCC=2" "-DDEBUG=0" -w*/
 #include <olduino.h>
 #include <nstdlib.h>
 #include <scc.h>
@@ -250,12 +251,96 @@ void shell_del(int argc, char **argv) {
 }
 
 
+
+
+void print_hex_dump(const char *data, unsigned size) {
+    unsigned offset = 0;
+    char ascii[17];
+    int i;
+    while(offset < size) {
+        /* Print address */
+        printf("%x: ", offset);
+        
+        /* Print hex bytes */
+        for(i = 0; i < 16; i++) {
+            if(offset + i < size) {
+                printf("%x ", (unsigned char)data[offset + i]);
+                ascii[i] = (data[offset + i] >= 32 && data[offset + i] < 127) ? 
+                          data[offset + i] : '.';
+            } else {
+                printf("   ");
+                ascii[i] = ' ';
+            }
+        }
+        
+        /* Print ASCII representation */
+        ascii[16] = '\0';
+        printf("| %s |\r\n", ascii);
+        
+        offset += 16;
+    }
+}
+
+void shell_cat(int argc, char **argv) {
+    FileEntry *files = get_file_table();
+    int found = -1;
+    int i = 0;
+    char *data ;//= (char*)files[found].start;
+    unsigned size ;//= files[found].size;
+    unsigned j;
+    
+    if(argc != 3) {
+        printf("Usage: cat <file> <HEX|TXT>\r\n");
+        return;
+    }
+
+    /* Find the file */
+    for(i = 0; i < MAX_FILES; i++) {
+        if(files[i].name[0] && 
+           strcmp(files[i].name, argv[1]) == 0 &&
+           files[i].type == TYPE_FILE) {
+            found = i;
+            break;
+        }
+    }
+
+    if(found == -1) {
+        printf("File not found: %s\r\n", argv[1]);
+        return;
+    }
+
+    data = (char*)files[found].start;
+    size = files[found].size;
+
+    /* Validate memory range */
+    /*
+    if((unsigned int *)data < USER_START || 
+       (unsigned int *)data + size > USER_END) {
+        printf("Invalid file memory!\r\n");
+        return;
+    }*/
+
+    /* Process display mode */
+    if(strcmp(argv[2], "TXT") == 0) {
+        printf("Text view of %s (%d bytes):\r\n", argv[1], size);
+        for(j = 0; i < size; i++) {
+            putc(data[i]);
+        }
+        printf("\r\n");
+    } else if(strcmp(argv[2], "HEX") == 0) {
+        printf("Hex dump of %s (%d bytes):\r\n", argv[1], size);
+        print_hex_dump(data, size);
+    } else {
+        printf("Invalid mode! Use HEX or TXT\r\n");
+    }
+}
+
 /* Command Implementations */
 void shell_load(int argc, char **argv) {
     unsigned size;
     int slot = -1;
     int i=0;
-    FileEntry *files = get_file_table(); // Use "struct" here
+    FileEntry *files = get_file_table();
     unsigned *user_ptr = get_user_ptr();
     
     if(argc != 2) {
@@ -270,12 +355,15 @@ void shell_load(int argc, char **argv) {
     }
 
     /* Find existing or free slot */
-    
     for(i=0; i<MAX_FILES; i++) {
-        if(files[i].name[0] == '\0' && slot == -1) slot = i;
-        if(strcmp(files[i].name, argv[1]) == 0) {
+        // First check for existing file
+        if(files[i].name[0] != '\0' && strcmp(files[i].name, argv[1]) == 0) {
             printf("File exists!\r\n");
             return;
+        }
+        // Then look for first empty slot
+        if(slot == -1 && files[i].name[0] == '\0') {
+            slot = i;
         }
     }
     
@@ -286,24 +374,20 @@ void shell_load(int argc, char **argv) {
 
     /* Load from serial */
     printf("Send data now...\r\n");
-    size = getsRTS((char*)*user_ptr /*,USER_END - *user_ptr*/);
+    size = getsRTS((char*)*user_ptr);
     
     if(size == 0) {
         printf("Load failed!\r\n");
         return;
     }
 
-    /* Update file entry */
-   // strcpy(files[slot].name, argv[1]/*, MAX_NAME_LEN-1*/);
-   // files[slot].name[MAX_NAME_LEN-1] = '\0';
-   // files[slot].start = (void(*)())*user_ptr;
-   // files[slot].size = size;
-
-        /* Update file entry */
-        strcpy(files[slot].name, argv[1]);
-        files[slot].name[MAX_NAME_LEN-1] = '\0';
-        files[slot].type = TYPE_FILE;
-        files[slot].parent = current_dir;  // Set parent directory
+    /* Clear and populate file entry */
+    memset(&files[slot], 0, sizeof(FileEntry));  // Clear entire entry
+    strcpy(files[slot].name, argv[1]);
+    files[slot].type = TYPE_FILE;
+    files[slot].parent = current_dir;
+    files[slot].start = (void(*)())*user_ptr;
+    files[slot].size = size;
     
     /* Advance memory pointer */
     *user_ptr += size;
@@ -311,10 +395,26 @@ void shell_load(int argc, char **argv) {
     printf("Loaded '%s' (%d bytes)\r\n", argv[1], size);
 }
 
+void verbose_cpy(char* dest, void* src, unsigned int count) {
+    unsigned int i;
+    char *src_char = (char *)src; // Cast src to char*
+
+    for (i = 0; i < count; i++) {
+        printf("moved %d/%d bytes...\r", i, count);
+        dest[i] = src_char[i];    // Now properly accesses bytes
+        
+    }
+}
+
+
+
 void shell_run(int argc, char **argv) {
     int i=0;
+    unsigned int j;
+    char *runzone = (char*)RUN_START;
     FileEntry *files = get_file_table();
     unsigned *user_ptr = get_user_ptr();
+    //unsigned *saved_ptr;
     
     if(argc != 2) {
         printf("Usage: run <name>\r\n");
@@ -323,10 +423,34 @@ void shell_run(int argc, char **argv) {
 
     for(i=0; i<MAX_FILES; i++) {
         if(strcmp(files[i].name, argv[1]) == 0) {
-            printf("Running '%s'...\r\n", argv[1]);
-            files[i].start();
-            printf("running %d bytes...\r\n",files[0].size);
-            memcpy((char *)0x9000,user_ptr,files[0].size);
+            //printf("Running '%s'...\r\n", argv[1]);
+            //files[i].start();
+            //printf("running %d bytes...\r\n",files[i].size);
+            printf("Moving %d bytes...",files[i].size);
+            
+            //memcpy((void*)0x9000,files[i].start ,files[i].size);
+            //memcpy((void*)RUN_START, files[i].start, files[i].size);
+            for(j=0;j<files[i].size;j++){
+                runzone[j]=((char *)files[i].start)[j];
+            }
+
+            /*for anyone reading this: why did i do this?
+            
+            on nstdlib.c you can find memcpy, and during testing, the pointers were being moved.
+            as such the moment we use the pointer again its in another totally different spot.
+
+            */
+            
+
+            printf(" done!\r\n");
+            printf("Validating load...\r\n");
+            if(memcmp((char*)RUN_START, (char*)files[i].start, files[i].size) != 0) {
+                printf(COLOR_RED "Copy verification failed!\r\n" COLOR_RESET);
+                //asm(" ei\n");
+                return;
+            }else{
+                printf(COLOR_GREEN "Copy verification OK!\r\n" COLOR_RESET);
+            }
             
             asm("   LBR 0x9000\n");
             return;
@@ -334,60 +458,46 @@ void shell_run(int argc, char **argv) {
     }
     printf("File not found!\r\n");
 
-    //FileEntry *files = get_file_table(); // Use "struct" here
-    
-    
-    //getsRTS((char*)*user_ptr /*,USER_END - *user_ptr*/);
-
-
-
-    /*
-    
-typedef struct {
-    char name[MAX_NAME_LEN];
-    void (*start)(void);
-    unsigned size;
-    unsigned char type;    // TYPE_FILE or TYPE_DIR
-    int parent;      // -1 for root, index otherwise
-} FileEntry;
-    */
-
 }
 
 /* Memory Initialization (call once at startup) */
 void init_memory_system(void) {
-    int i=0;
-    /* Initialize user memory pointer */
     unsigned *user_ptr = get_user_ptr();
     FileEntry *files = get_file_table();
-    *user_ptr = USER_START + sizeof(unsigned);  // Skip pointer storage
+    int i = 0;
+    int root_initialized = 0;
     
-    /* Clear file table */
-    /* Add these global state variables */
-    current_dir = -1;  // -1 = root
-    
-    
-    for(i=0;i<sizeof(current_path);i++){
-        current_path[i]=NULL;
-    }
-    current_path[0] = '/';
-    for(i=0; i<MAX_FILES; i++) {
-        files[i].name[0] = '\0';
-        files[i].start = NULL;
-        files[i].size = 0;
+    /* Only initialize user pointer if invalid */
+    if(*user_ptr < USER_START || *user_ptr > USER_END) {
+        *user_ptr = USER_START + sizeof(unsigned);
     }
 
-    /* Revised directory tracking */
-    current_path[MAX_PATH_LEN] = '/';
-    // Create root directory
-    files[0].name[0] = '\0';  // Root has empty name
-    files[0].type = TYPE_DIR;
-    files[0].parent = -1;
-    files[0].start = NULL;
-    files[0].size = 0;
+    /* Initialize root directory only if needed */
+    root_initialized = 0;
+    for(i = 0; i < MAX_FILES; i++) {
+        if(files[i].type == TYPE_DIR && files[i].parent == -1) {
+            root_initialized = 1;
+            break;
+        }
+    }
+    
+    if(!root_initialized) {
+        /* Create root directory in first available slot */
+        for(i = 0; i < MAX_FILES; i++) {
+            if(files[i].name[0] == '\0') {
+                files[i].type = TYPE_DIR;
+                files[i].parent = -1;
+                strcpy(files[i].name, "");
+                files[i].size = 0;
+                break;
+            }
+        }
+    }
 
-        
-        
+    /* Initialize current directory state */
+    current_dir = -1;
+    strcpy(current_path, "/");
+    current_path[MAX_PATH_LEN-1] = '\0';
 }
 
 void shell_mkdir(int argc, char **argv) {
@@ -507,7 +617,7 @@ void get_command(char *buf) {
 
 void shell_help(int argc, char **argv) {
     //const char *names[] = {"help", "mem", "rtc", "io", "clear","load","run","ls","del","cd","mkdir","hardwipe", NULL};
-    const char *names[] = {"help", "mem", "rtc", "io", "clear","load","run","ls","del","cd","mkdir","hardwipe", NULL};
+    const char *names[] = {"help", "mem", "rtc", "io", "clear","load","run","ls","del","cd","mkdir","hardwipe","cat", NULL};
     int i = 0;
     const char *helps[] = {
         "Show this help",
@@ -522,6 +632,7 @@ void shell_help(int argc, char **argv) {
         "cd <path> change directory",
         "mkdir <dir> make a directory",
         "hardwipe wipes all data",
+        "cat <file> <TXT|HEX>",
         NULL
     };
 
@@ -683,21 +794,28 @@ void print_prompt(void) {
 
 void shell_hardwipe(int argc, char **argv){
     // Clear all entries thoroughly
-    int i=0;
-    unsigned *user_ptr = get_user_ptr();
+    int i = 0;
     FileEntry *files = get_file_table();
-    unsigned user_used = *user_ptr - USER_START;
-    unsigned user_total = USER_END - USER_START;
-    int count = 0;
-    unsigned files_bytes = 0;
-    init_memory_system();
+    unsigned *user_ptr = get_user_ptr();
+
+    /* Clear all file entries */
     for(i = 0; i < MAX_FILES; i++) {
         memset(&files[i], 0, sizeof(FileEntry));
     }
-    
-    // Initialize root directory properly
+
+    /* Reset memory pointer */
+    *user_ptr = USER_START + sizeof(unsigned);
+
+    /* Recreate root directory */
     files[0].type = TYPE_DIR;
     files[0].parent = -1;
+    strcpy(files[0].name, "");
+
+    /* Reset directory state */
+    current_dir = -1;
+    strcpy(current_path, "/");
+
+    printf("System fully reset\r\n");
 }
 
 void execute_command(char *cmdline) {
@@ -706,9 +824,9 @@ void execute_command(char *cmdline) {
     int i = 0;
     
     /* Local command definitions */
-    const char *names[] = {"help", "mem", "rtc", "io", "clear","load","run","ls","del","cd","mkdir","hardwipe", NULL};
+    const char *names[] = {"help", "mem", "rtc", "io", "clear","load","run","ls","del","cd","mkdir","hardwipe","cat", NULL};
     void (*funcs[])(int, char**) = {shell_help, shell_mem, shell_rtc, 
-                                   shell_io, shell_clear,shell_load,shell_run,shell_ls,shell_del,shell_cd,shell_mkdir,shell_hardwipe, NULL};
+                                   shell_io, shell_clear,shell_load,shell_run,shell_ls,shell_del,shell_cd,shell_mkdir,shell_hardwipe,shell_cat, NULL};
 
     /* Tokenize command line */
     args[argc] = strtok(cmdline, " ");
