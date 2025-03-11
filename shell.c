@@ -774,7 +774,22 @@ void shell_io(int argc, char **argv) {
             return;
         }
         
-        out(port, value);
+        //out(port, value); //this doesnt work, so we doing a temporary fix
+	switch(port){
+		case 2:
+			out(2,value);
+		break;
+		case 3:
+			out(3,value);
+		break;
+		case 4:
+			out(4,value);
+		break;
+		default:
+			break;
+
+		
+	}
         printf("Bank %s Port %d set to 0x%cx (%d)\r\n", 
                bank_name, port, value, value);
     }
