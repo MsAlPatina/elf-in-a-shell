@@ -2,6 +2,7 @@
 #include <olduino.h>
 #include <nstdlib.h>
 #include <scc.h>
+#include <EF.h>
 
 /* Memory Map Constants */
 #define HEAP_START   0x8000
@@ -33,6 +34,10 @@
 #define MAX_DISPLAY_NAME 15  // Leave room for null terminator
 
 
+/*Autorun stuff*/
+char *fileAdress; //tells the loader what file to run.
+unsigned int fileSize; //tells the loader the size of the file
+char *fileName;
 
 /* File System Structure */
 typedef struct {
@@ -105,6 +110,28 @@ int htoi(const char *s) {
 unsigned* get_user_ptr(void) {
     return (unsigned*)(USER_START);
 }
+
+/*Autorun handler on boot*/
+
+void autorunner(){
+    char* address_copy;
+    unsigned int j;
+    char *runzone=(char*)0x9000;
+    if(fileSize==0){
+        printf("No file selected.\r\nPress any key to go to shell.\r\n");
+        getc();
+    }else{
+        address_copy=fileAdress;
+        printf("Running '%s'.\r\n",fileName);
+        for(j=0;j<fileSize;j++){
+            runzone[j]=fileAdress[j];
+        }
+        fileAdress = address_copy;
+        asm("   LBR 0x9000\n");
+
+    }
+}
+
 
 /* Revised shell_cd function */
 void shell_cd(int argc, char **argv) {
@@ -389,9 +416,10 @@ void shell_load(int argc, char **argv) {
     files[slot].size = size;
     
     /* Advance memory pointer */
-    *user_ptr += size;
+    //*user_ptr += size;
     
     printf("Loaded '%s' (%d bytes)\r\n", argv[1], size);
+    printf("pointer 0: %x\r\n",(char*)files[slot].start);
 }
 
 void verbose_cpy(char* dest, void* src, unsigned int count) {
@@ -404,15 +432,62 @@ void verbose_cpy(char* dest, void* src, unsigned int count) {
         
     }
 }
+    /*Allows user to select a file to be used to run automaticly after boot when EF4 is toggled on*/
+void shell_set_auto_run(int argc, char **argv){
+    int i=0;
+    unsigned int j;
+    FileEntry *files = get_file_table();
+    if(argc != 2) {
+        printf("Usage: autorun <name> or 'autorun clear' to clear the code.\r\n");
+        return;
+    }
+    if(strcmp(argv[1],"clear")==0){
+        printf(COLOR_CYAN "Removed autorun script.\r\n" COLOR_RESET);
+        fileAdress=(char*)0x0000;
+        fileSize=0;
+        strcpy(fileName,"NULL");
 
-
+    }
+    for(i=0; i<MAX_FILES; i++) {
+        if(strcmp(files[i].name, argv[1]) == 0) {
+                printf("Press enter to confirm, c to cancel\r\n");
+            //    printf("pointer 4: %x\r\n",(char*)files[i].start);
+                //asm(" ei\n");
+            while(1){
+                switch(getc()){
+                    case 'c':
+                        printf(COLOR_RED "User cancelled process!\r\n" COLOR_RESET);
+                        break;
+                    case '\r':case '\n':
+                        printf(COLOR_GREEN "File %s has been selected to run on startups!\r\n" COLOR_RESET,files[i].name);
+                            fileAdress=(char*)files[i].start;
+                            fileSize=files[i].size;
+                            strcpy(fileName,files[i].name);
+                            break;
+                        
+                        default:
+                            printf("press an valid key.\r\n");
+                }
+            }
+            //printf("pointer 5: %x\r\n",(char*)files[i].start);
+           
+            //files[i].start = files[i].start - 1;
+            
+            
+            
+            return;
+        }
+    }
+    printf("File not found!\r\n");
+}
 
 void shell_run(int argc, char **argv) {
     int i=0;
     unsigned int j;
     char *runzone = (char*)RUN_START;
+    char* address_copy;
     FileEntry *files = get_file_table();
-    unsigned *user_ptr = get_user_ptr();
+    //unsigned *user_ptr = get_user_ptr();
     //unsigned *saved_ptr;
     
     if(argc != 2) {
@@ -429,10 +504,15 @@ void shell_run(int argc, char **argv) {
             
             //memcpy((void*)0x9000,files[i].start ,files[i].size);
             //memcpy((void*)RUN_START, files[i].start, files[i].size);
+            //printf("pointer 1: %x\r\n",(char*)files[i].start);
+            //files[i].start = (void (*)(void))((char*)files[i].start - 1);
+            address_copy=(char*)files[i].start;
+            printf("pointer 2: %x\r\n",(char*)files[i].start);
             for(j=0;j<files[i].size;j++){
                 runzone[j]=((char *)files[i].start)[j];
             }
-
+            printf("pointer 3: %x\r\n",(char*)files[i].start);
+            files[i].start = (void (*)(void))(address_copy);
             /*for anyone reading this: why did i do this?
             
             on nstdlib.c you can find memcpy, and during testing, the pointers were being moved.
@@ -443,15 +523,35 @@ void shell_run(int argc, char **argv) {
 
             printf(" done!\r\n");
             printf("Validating load...\r\n");
-            if(memcmp((char*)RUN_START, (char*)files[i].start, files[i].size) != 0) {
-                printf(COLOR_RED "Copy verification failed!\r\n" COLOR_RESET);
+            //if(memcmp((char*)RUN_START, (char*)files[i].start, 8) != 0) {
+            //if(((char*)files[i].start)[0]==runzone[0]) {
+            //    printf(COLOR_RED "Copy verification failed!\r\n" COLOR_RESET);
+                printf("Expected 0x%cx got 0x%cx\r\n",((char*)files[i].start)[0],runzone[0]);
+                printf("Press enter to run, c to cancel\r\n");
+            //    printf("pointer 4: %x\r\n",(char*)files[i].start);
                 //asm(" ei\n");
-                return;
-            }else{
-                printf(COLOR_GREEN "Copy verification OK!\r\n" COLOR_RESET);
+            while(1){
+                switch(getc()){
+                    case 'c':
+                        printf(COLOR_RED "Copy verification failed!\r\n" COLOR_RESET);
+                        goto quits;
+                        //break;
+                    case '\r':case '\n':
+                        printf(COLOR_GREEN "Copy verification OK!\r\n" COLOR_RESET);
+                        files[i].start = (void (*)(void))(address_copy);
+
+                        asm("   LBR 0x9000\n");
+                        default:
+                            printf("press an valid key.\r\n");
+                }
             }
+            quits:
+            //printf("pointer 5: %x\r\n",(char*)files[i].start);
+            files[i].start = (void (*)(void))(address_copy);
+            //files[i].start = files[i].start - 1;
             
-            asm("   LBR 0x9000\n");
+            
+            
             return;
         }
     }
@@ -668,6 +768,7 @@ void shell_help(int argc, char **argv) {
         "mkdir <dir> make a directory",
         "hardwipe wipes all data",
         "cat <file> <TXT|HEX>",
+        "autorun <file> or 'clear', set a file to autorun",
         NULL
     };
 
@@ -877,9 +978,9 @@ void execute_command(char *cmdline) {
     int i = 0;
     
     /* Local command definitions */
-    const char *names[] = {"help", "mem", "rtc", "io", "clear","load","run","ls","del","cd","mkdir","hardwipe","cat", NULL};
+    const char *names[] = {"help", "mem", "rtc", "io", "clear","load","run","ls","del","cd","mkdir","hardwipe","cat","autorun", NULL};
     void (*funcs[])(int, char**) = {shell_help, shell_mem, shell_rtc, 
-                                   shell_io, shell_clear,shell_load,shell_run,shell_ls,shell_del,shell_cd,shell_mkdir,shell_hardwipe,shell_cat, NULL};
+                                   shell_io, shell_clear,shell_load,shell_run,shell_ls,shell_del,shell_cd,shell_mkdir,shell_hardwipe,shell_cat,shell_set_auto_run, NULL};
 
     /* Tokenize command line */
     args[argc] = strtok(cmdline, " ");
@@ -900,12 +1001,19 @@ void execute_command(char *cmdline) {
 
 /* Main Function */
 int main() {
-    char cmd_buffer[MAX_CMD];
     
+    char cmd_buffer[MAX_CMD];
+    asm("   XID\n");
     sccInit();
     //init_memory_system();
     printf("\033[2J\033[H");
+
+
     printf("SBC1806 Shell v" VERSION "\r\n");
+
+    if(!TEF4()){
+        autorunner();
+    }
     
     while(1) {
         print_prompt();
